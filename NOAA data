@@ -1,0 +1,13 @@
+install.packages("devtools")
+devtools::install_github("ropensci/rnoaa")
+
+install.packages("geosphere")
+library(rnoaa)
+library(geosphere)
+
+########additional libraries#########
+library(tidyverse)
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(readr)
