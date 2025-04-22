@@ -11,3 +11,84 @@ library(tidyr)
 library(lubridate)
 library(dplyr)
 library(readr)
+
+###################noaa######################
+#Download NOAA station metadata (just once), take awhile
+stations <- ghcnd_stations()
+#inventory <- ghcnd_inventory()
+# Read GHCN inventory from NOAA
+inventory_url <- "https://www1.ncdc.noaa.gov/pub/data/ghcn/daily/ghcnd-inventory.txt"
+inventory_file <- tempfile()
+download.file(inventory_url, inventory_file, quiet = TRUE)
+
+# Read fixed-width file with correct widths
+inventory <- read_fwf(
+  inventory_file,
+  fwf_widths(c(11, 9, 10, 5, 5, 5), col_names = c("id", "latitude", "longitude", "element", "first_year", "last_year")),
+  col_types = cols()
+)
+
+# Only want stations with good TMAX data from 2010–2024
+inventory_filtered <- inventory %>%
+  filter(
+    element == "TMIN",
+    first_year <= 2010,
+    last_year >= 2024
+  )
+
+#limit years and states
+stations_filtered <- stations %>%
+  filter(
+    first_year <= 2023,  # data began before or during 2023
+    last_year >= 2024,     # data continues at least through 2024
+    state %in% c("NE", "IA", "MO", "KS", "SD", "MN", "CO"), #selected states#
+    id %in% inventory_filtered$id
+  )
+#Match each row to its nearest station, 100km search
+
+get_nearest_station <- function(lat, lon, stations_df, radius_km = 100) {
+  # Calculate distance from input lat/lon to all stations
+  stations_df <- stations_df %>%
+    mutate(
+      distance = distHaversine(cbind(longitude, latitude), c(lon, lat)) / 1000  # convert to km
+    ) %>%
+    filter(distance <= radius_km) %>%
+    arrange(distance)
+  
+  # Return ID of nearest station
+  if (nrow(stations_df) > 0) {
+    return(stations_df$id[1])
+  } else {
+    return(NA)
+  }
+}
+
+###sample data from sample.csv##
+df4 <- read.csv("sample.csv")
+
+###may take 10 minutes or less, assign station id to each site##
+df4 <- df4 %>%
+  rowwise() %>%
+  mutate(station_id = get_nearest_station(lat, long, stations_filtered)) %>%
+  ungroup()
+
+##Fetch weather data
+get_weather_for_row <- function(station_id, date) {
+  tryCatch({
+    wx <- ghcnd_search(stationid = station_id, date_min = date, date_max = date)
+    
+    tibble(
+      tmax = if ("tmax" %in% names(wx)) wx$tmax$tmax[1] / 10 else NA,
+      tmin = if ("tmin" %in% names(wx)) wx$tmin$tmin[1] / 10 else NA,
+      prcp = if ("prcp" %in% names(wx)) wx$prcp$prcp[1] / 10 else NA,
+      wspd = NA  # Wind speed not available from GHCN daily
+    )
+  }, error = function(e) {
+    tibble(tmax = NA, tmin = NA, prcp = NA, wspd = NA)
+  })
+}
+
+df5 <- df4 %>%
+  rowwise() %>%
+  mutate(weather = list(get_weather_for_row(station_id, night))) %>%
+  unnest(weather)
